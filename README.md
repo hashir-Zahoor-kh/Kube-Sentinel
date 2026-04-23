@@ -1,3 +1,5 @@
+![Tests](https://github.com/hashir-Zahoor-kh/Kube-Sentinel/actions/workflows/test.yml/badge.svg)
+
 # Kube-Sentinel
 
 A Kubernetes controller that watches every pod in your cluster for
