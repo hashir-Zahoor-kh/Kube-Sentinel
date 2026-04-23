@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-sentinel
+  namespace: kube-sentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-sentinel
+  template:
+    metadata:
+      labels:
+        app: kube-sentinel
+    spec:
+      serviceAccountName: kube-sentinel
+      containers:
+      - name: kube-sentinel
+        image: kube-sentinel:dev
+        imagePullPolicy: Never
+        args: ["-config=/config.yaml"]
+        ports:
+        - containerPort: 8080
+          name: metrics
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
