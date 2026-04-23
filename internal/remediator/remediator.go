@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/hashir/kube-sentinel/internal/alerter"
 	"github.com/hashir/kube-sentinel/internal/classifier"
 	"github.com/hashir/kube-sentinel/internal/config"
 	"github.com/hashir/kube-sentinel/internal/metrics"
@@ -58,6 +59,9 @@ type Remediator struct {
 	// rec is the Prometheus metrics recorder. May be nil (metrics disabled).
 	rec *metrics.Recorder
 
+	// alrt fires JSON alerts when crash thresholds are exceeded. May be nil.
+	alrt *alerter.Alerter
+
 	// mu protects restartCounts from concurrent writes.
 	// Multiple pod-handler goroutines may call Remediate simultaneously.
 	mu sync.Mutex
@@ -67,13 +71,15 @@ type Remediator struct {
 	restartCounts map[string]int
 }
 
-// New constructs a Remediator. rec may be nil to disable metrics recording.
-func New(client kubernetes.Interface, logger *zap.Logger, cfg *config.Config, rec *metrics.Recorder) *Remediator {
+// New constructs a Remediator. rec and alrt may be nil to disable their
+// respective features.
+func New(client kubernetes.Interface, logger *zap.Logger, cfg *config.Config, rec *metrics.Recorder, alrt *alerter.Alerter) *Remediator {
 	return &Remediator{
 		client:        client,
 		logger:        logger,
 		cfg:           cfg,
 		rec:           rec,
+		alrt:          alrt,
 		restartCounts: make(map[string]int),
 	}
 }
@@ -145,6 +151,9 @@ func (r *Remediator) handleOOMKilled(ctx context.Context, pod *corev1.Pod, resul
 	if r.rec != nil {
 		r.rec.RecordRemediation(metrics.ActionMemoryPatch)
 	}
+	if r.alrt != nil {
+		r.alrt.RecordRemediation(pod, metrics.ActionMemoryPatch)
+	}
 	r.logger.Info("OOMKilled remediation complete",
 		zap.String("pod", pod.Name),
 		zap.String("deployment", dep.Name),
@@ -164,9 +173,11 @@ func (r *Remediator) handleConfigError(ctx context.Context, pod *corev1.Pod, res
 		zap.Int32("exit_code", result.ExitCode),
 		zap.String("hint", "check your ConfigMaps, Secrets, and environment variables"),
 	)
-	// Stage 5 will call alerter.FireCritical(pod, result) here.
 	if r.rec != nil {
 		r.rec.RecordRemediation(metrics.ActionAlertOnly)
+	}
+	if r.alrt != nil {
+		r.alrt.RecordRemediation(pod, metrics.ActionAlertOnly)
 	}
 	return nil
 }
@@ -206,6 +217,9 @@ func (r *Remediator) handleAppCrash(ctx context.Context, pod *corev1.Pod, result
 		}
 		if r.rec != nil {
 			r.rec.RecordRemediation(metrics.ActionPodRestart)
+		}
+		if r.alrt != nil {
+			r.alrt.RecordRemediation(pod, metrics.ActionPodRestart)
 		}
 		return nil
 	}
@@ -251,11 +265,13 @@ func (r *Remediator) handleUnknown(ctx context.Context, pod *corev1.Pod, result 
 		if r.rec != nil {
 			r.rec.RecordRemediation(metrics.ActionPodRestart)
 		}
+		if r.alrt != nil {
+			r.alrt.RecordRemediation(pod, metrics.ActionPodRestart)
+		}
 		return nil
 	}
 
 	// Already restarted once and it crashed again — alert without auto-fix.
-	// Stage 5 will call alerter.FireCritical(pod, result) here.
 	r.logger.Error("Unknown failure persists after restart — manual investigation required",
 		zap.String("pod", pod.Name),
 		zap.String("namespace", pod.Namespace),
@@ -263,6 +279,9 @@ func (r *Remediator) handleUnknown(ctx context.Context, pod *corev1.Pod, result 
 	)
 	if r.rec != nil {
 		r.rec.RecordRemediation(metrics.ActionAlertOnly)
+	}
+	if r.alrt != nil {
+		r.alrt.RecordRemediation(pod, metrics.ActionAlertOnly)
 	}
 	return nil
 }
@@ -436,6 +455,9 @@ func (r *Remediator) rollbackDeployment(ctx context.Context, pod *corev1.Pod) er
 		// RecordRollback increments both rollbacks_total and
 		// remediations_total{action="rollback"} in one call.
 		r.rec.RecordRollback()
+	}
+	if r.alrt != nil {
+		r.alrt.RecordRemediation(pod, metrics.ActionRollback)
 	}
 	r.logger.Info("Rollback complete",
 		zap.String("deployment", dep.Name),

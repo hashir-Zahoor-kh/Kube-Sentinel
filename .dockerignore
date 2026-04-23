@@ -1,0 +1,9 @@
+.git
+.github
+*.md
+Dockerfile
+.dockerignore
+# Go test binaries and coverage files
+*.test
+*.out
+coverage.txt
