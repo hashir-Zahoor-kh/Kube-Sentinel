@@ -24,6 +24,7 @@ import (
 
 	"github.com/hashir/kube-sentinel/internal/classifier"
 	"github.com/hashir/kube-sentinel/internal/config"
+	"github.com/hashir/kube-sentinel/internal/remediator"
 	"github.com/hashir/kube-sentinel/internal/watcher"
 )
 
@@ -126,26 +127,32 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel() // always release the signal registration
 
-	logger.Info("Kube-Sentinel starting", zap.String("stage", "2 — watcher + classifier"))
+	logger.Info("Kube-Sentinel starting", zap.String("stage", "3 — watcher + classifier + remediator"))
 
 	// -------------------------------------------------------------------------
 	// 6. Classifier setup
 	// -------------------------------------------------------------------------
 	// K8sLogReader fetches real container logs from the Kubernetes API.
-	// In tests, this is swapped for a fake reader so no cluster is needed.
+	// In tests it is swapped out for a fake reader (no cluster needed).
 	logReader := classifier.NewK8sLogReader(clientset)
 	clsf := classifier.New(logger, logReader)
 
 	// -------------------------------------------------------------------------
-	// 7. Pod watcher
+	// 7. Remediator setup
+	// -------------------------------------------------------------------------
+	rem := remediator.New(clientset, logger, cfg)
+
+	// -------------------------------------------------------------------------
+	// 8. Pod watcher
 	// -------------------------------------------------------------------------
 	// podHandler is called for every pod that enters CrashLoopBackOff.
-	// Stage 2: call the classifier and log the result.
-	// Stage 3 will pass the result to the remediator.
+	// The pipeline is: detect → classify → remediate.
+	// Each pod is handled in its own goroutine so the informer event loop
+	// is never blocked by a slow API call (e.g., fetching logs or patching
+	// a Deployment).
 	podHandler := func(pod *corev1.Pod) {
-		// Run the classification in a goroutine so the watcher event handler
-		// returns quickly and doesn't block the informer's event loop.
 		go func() {
+			// Step 1: classify the failure.
 			result, err := clsf.Classify(ctx, pod)
 			if err != nil {
 				logger.Error("Classification failed",
@@ -155,13 +162,23 @@ func main() {
 				)
 				return
 			}
-			logger.Warn("CrashLoopBackOff classified — remediation not yet wired (Stage 2)",
+
+			logger.Info("Failure classified",
 				zap.String("pod", pod.Name),
 				zap.String("namespace", pod.Namespace),
-				zap.String("container", result.ContainerName),
 				zap.String("failure_type", string(result.FailureType)),
 				zap.Int32("exit_code", result.ExitCode),
 			)
+
+			// Step 2: remediate.
+			if err := rem.Remediate(ctx, pod, result); err != nil {
+				logger.Error("Remediation failed",
+					zap.String("pod", pod.Name),
+					zap.String("namespace", pod.Namespace),
+					zap.String("failure_type", string(result.FailureType)),
+					zap.Error(err),
+				)
+			}
 		}()
 	}
 
