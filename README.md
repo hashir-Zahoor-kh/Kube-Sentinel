@@ -82,6 +82,14 @@ Kubernetes API
 
 ---
 
+## Demo
+
+Live detection, classification, and remediation of a CrashLoopBackOff event:
+
+![Kube-Sentinel Demo](docs/demo.png)
+
+---
+
 ## Prerequisites
 
 | Tool | Minimum version |
