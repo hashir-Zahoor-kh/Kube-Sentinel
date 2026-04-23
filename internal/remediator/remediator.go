@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/hashir/kube-sentinel/internal/classifier"
 	"github.com/hashir/kube-sentinel/internal/config"
+	"github.com/hashir/kube-sentinel/internal/metrics"
 )
 
 // revisionAnnotation is the annotation Kubernetes sets on each ReplicaSet to
@@ -53,6 +55,9 @@ type Remediator struct {
 	// MemoryLimitIncreasePercent.
 	cfg *config.Config
 
+	// rec is the Prometheus metrics recorder. May be nil (metrics disabled).
+	rec *metrics.Recorder
+
 	// mu protects restartCounts from concurrent writes.
 	// Multiple pod-handler goroutines may call Remediate simultaneously.
 	mu sync.Mutex
@@ -62,24 +67,34 @@ type Remediator struct {
 	restartCounts map[string]int
 }
 
-// New constructs a Remediator.
-func New(client kubernetes.Interface, logger *zap.Logger, cfg *config.Config) *Remediator {
+// New constructs a Remediator. rec may be nil to disable metrics recording.
+func New(client kubernetes.Interface, logger *zap.Logger, cfg *config.Config, rec *metrics.Recorder) *Remediator {
 	return &Remediator{
 		client:        client,
 		logger:        logger,
 		cfg:           cfg,
+		rec:           rec,
 		restartCounts: make(map[string]int),
 	}
 }
 
 // Remediate dispatches to the appropriate handler based on the classifier result.
-// It is safe to call concurrently from multiple goroutines.
+// It records the remediation duration histogram and is safe to call concurrently.
 func (r *Remediator) Remediate(ctx context.Context, pod *corev1.Pod, result *classifier.Result) error {
 	r.logger.Info("Starting remediation",
 		zap.String("pod", pod.Name),
 		zap.String("namespace", pod.Namespace),
 		zap.String("failure_type", string(result.FailureType)),
 	)
+
+	// Start a wall-clock timer. We record it unconditionally (success or error)
+	// so the histogram shows how long each remediation type actually takes.
+	start := time.Now()
+	defer func() {
+		if r.rec != nil {
+			r.rec.ObserveRemediationDuration(string(result.FailureType), time.Since(start).Seconds())
+		}
+	}()
 
 	switch result.FailureType {
 	case classifier.FailureOOMKilled:
@@ -127,6 +142,9 @@ func (r *Remediator) handleOOMKilled(ctx context.Context, pod *corev1.Pod, resul
 		return fmt.Errorf("OOMKilled: deleting pod for restart: %w", err)
 	}
 
+	if r.rec != nil {
+		r.rec.RecordRemediation(metrics.ActionMemoryPatch)
+	}
 	r.logger.Info("OOMKilled remediation complete",
 		zap.String("pod", pod.Name),
 		zap.String("deployment", dep.Name),
@@ -147,6 +165,9 @@ func (r *Remediator) handleConfigError(ctx context.Context, pod *corev1.Pod, res
 		zap.String("hint", "check your ConfigMaps, Secrets, and environment variables"),
 	)
 	// Stage 5 will call alerter.FireCritical(pod, result) here.
+	if r.rec != nil {
+		r.rec.RecordRemediation(metrics.ActionAlertOnly)
+	}
 	return nil
 }
 
@@ -180,7 +201,13 @@ func (r *Remediator) handleAppCrash(ctx context.Context, pod *corev1.Pod, result
 			zap.Int("attempt", count+1),
 			zap.Int("of", r.cfg.MaxRestartAttempts),
 		)
-		return r.deletePod(ctx, pod)
+		if err := r.deletePod(ctx, pod); err != nil {
+			return err
+		}
+		if r.rec != nil {
+			r.rec.RecordRemediation(metrics.ActionPodRestart)
+		}
+		return nil
 	}
 
 	// Exceeded max restarts — roll back to the last known-good image.
@@ -218,7 +245,13 @@ func (r *Remediator) handleUnknown(ctx context.Context, pod *corev1.Pod, result 
 		r.restartCounts[key]++
 		r.mu.Unlock()
 
-		return r.deletePod(ctx, pod)
+		if err := r.deletePod(ctx, pod); err != nil {
+			return err
+		}
+		if r.rec != nil {
+			r.rec.RecordRemediation(metrics.ActionPodRestart)
+		}
+		return nil
 	}
 
 	// Already restarted once and it crashed again — alert without auto-fix.
@@ -228,6 +261,9 @@ func (r *Remediator) handleUnknown(ctx context.Context, pod *corev1.Pod, result 
 		zap.String("namespace", pod.Namespace),
 		zap.Int("crash_count", count+1),
 	)
+	if r.rec != nil {
+		r.rec.RecordRemediation(metrics.ActionAlertOnly)
+	}
 	return nil
 }
 
@@ -396,6 +432,11 @@ func (r *Remediator) rollbackDeployment(ctx context.Context, pod *corev1.Pod) er
 			dep.Name, currentRS.rev, previousRS.rev, prevImage, r.cfg.MaxRestartAttempts),
 	)
 
+	if r.rec != nil {
+		// RecordRollback increments both rollbacks_total and
+		// remediations_total{action="rollback"} in one call.
+		r.rec.RecordRollback()
+	}
 	r.logger.Info("Rollback complete",
 		zap.String("deployment", dep.Name),
 		zap.Int64("stable_revision", previousRS.rev),

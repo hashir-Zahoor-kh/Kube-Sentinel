@@ -145,7 +145,7 @@ func TestRemediate_OOMKilled(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 137)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureOOMKilled,
@@ -185,7 +185,7 @@ func TestRemediate_OOMKilled_NoExistingLimit(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 137)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureOOMKilled,
@@ -216,7 +216,7 @@ func TestRemediate_ConfigError(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 1)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureConfigError,
@@ -240,7 +240,7 @@ func TestRemediate_AppCrash_Restart(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 1)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureAppCrash,
@@ -267,7 +267,7 @@ func TestRemediate_AppCrash_Rollback(t *testing.T) {
 
 	client := fake.NewSimpleClientset(dep, rs1, rs2, pod)
 	cfg := defaultCfg() // MaxRestartAttempts = 2
-	rem := remediator.New(client, zap.NewNop(), cfg)
+	rem := remediator.New(client, zap.NewNop(), cfg, nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureAppCrash,
@@ -315,7 +315,7 @@ func TestRemediate_Unknown_FirstCrash(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 2)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureUnknown,
@@ -338,7 +338,7 @@ func TestRemediate_Unknown_SecondCrash(t *testing.T) {
 	pod := makeCrashPod("my-app-pod", "default", "my-app-rs1", 2)
 
 	client := fake.NewSimpleClientset(dep, rs, pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureUnknown,
@@ -386,7 +386,7 @@ func TestRemediate_AppCrash_NoDeployment(t *testing.T) {
 	}
 
 	client := fake.NewSimpleClientset(pod)
-	rem := remediator.New(client, zap.NewNop(), defaultCfg())
+	rem := remediator.New(client, zap.NewNop(), defaultCfg(), nil)
 
 	result := &classifier.Result{
 		FailureType:   classifier.FailureAppCrash,
