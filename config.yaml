@@ -1,0 +1,19 @@
+# Kube-Sentinel configuration
+# All fields are optional — missing fields use the defaults shown here.
+
+# How many times to restart an AppCrash pod before rolling back to
+# the last stable ReplicaSet image.
+max_restart_attempts: 3
+
+# How much to increase the memory limit for OOMKilled pods (percentage).
+# e.g. 25 means a 512Mi limit becomes 640Mi.
+memory_limit_increase_percent: 25
+
+# Time window in minutes for counting crashes for alerting purposes.
+crash_window_minutes: 10
+
+# Number of crashes within crash_window_minutes that triggers a critical alert.
+alert_threshold: 3
+
+# List of namespaces to watch. Leave empty ([]) to watch ALL namespaces.
+namespaces_to_watch: []
